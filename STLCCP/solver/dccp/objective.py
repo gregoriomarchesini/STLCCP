@@ -1,7 +1,7 @@
 __author__ = "Xinyue"
 # Modified by Takayama in 2023-01 for STLCCP
 
-from dccp.linearize import linearize
+from .linearize import linearize
 import cvxpy as cvx
 
 
@@ -20,14 +20,14 @@ def is_dccp(objective):
         return True
 
 
-def convexify_obj(obj):
+def convexify_obj(obj, cache=None):
     """
     :param obj: objective of a problem
     :return: convexified onjective or None
     """
     # not dcp
     if obj.is_dcp() == False:
-        lin = linearize(obj.expr)
+        lin = linearize(obj.expr, cache=cache)
         # non-sub/super-diff
         if lin is None:
             return None

@@ -1,11 +1,11 @@
 __author__ = "Xinyue"
 # Modified by Takayama in 2023-01 for STLCCP
 
-from dccp.linearize import linearize
+from .linearize import linearize
 import cvxpy as cvx
 
 
-def convexify_constr(constr):
+def convexify_constr(constr, cache=None):
     """
     :param constr: a constraint of a problem
     :return:
@@ -17,7 +17,7 @@ def convexify_constr(constr):
         dom = []
         # left hand concave
         if constr.args[0].curvature == "CONCAVE":
-            left = linearize(constr.args[0])
+            left = linearize(constr.args[0], cache=cache)
             if left is None:
                 return None
             else:
@@ -27,7 +27,7 @@ def convexify_constr(constr):
             left = constr.args[0]
         # right hand convex
         if constr.args[1].curvature == "CONVEX":
-            right = linearize(constr.args[1])
+            right = linearize(constr.args[1], cache=cache)
             if right is None:
                 return None
             else:

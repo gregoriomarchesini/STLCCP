@@ -25,6 +25,7 @@ def dccp(
     solver=None,
     max_penalty=1e-5,
     ep=1e-2,
+    parameterize=True,
     **kwargs
 ):
     """
@@ -34,6 +35,7 @@ def dccp(
     :param mu:  increment of weight on slack variables
     :param tau_max: maximum weight on slack variables
     :param solver: specify the solver for the transformed problem
+    :param parameterize: reuse a DPP subproblem, or rebuild it for comparison
     :return
         if the transformed problem is infeasible, return None;
     """
@@ -59,7 +61,8 @@ def dccp(
         )  # initialization; 
         # iterations
         result_temp = iter_dccp(
-            self, max_iter, self.tau, mu, tau_max, solver, ep, max_penalty, **kwargs
+            self, max_iter, self.tau, mu, tau_max, solver, ep, max_penalty,
+            parameterize=parameterize, **kwargs
         )
         # first iteration
         if t == 0:
@@ -187,7 +190,8 @@ def is_contain_complex_numbers(self):
     return False
 
 
-def iter_dccp(self, max_iter, tau, mu, tau_max, solver, ep, max_penalty_tol, **kwargs):
+def iter_dccp(self, max_iter, tau, mu, tau_max, solver, ep, max_penalty_tol,
+              parameterize=True, **kwargs):
     """
     ccp iterations
     :param max_iter: maximum number of iterations in ccp
@@ -251,72 +255,82 @@ def iter_dccp(self, max_iter, tau, mu, tau_max, solver, ep, max_penalty_tol, **k
         var_weight = np.full_like(var_weight,penaltymin) # same-weight = lowest in tree
 
     rate=0.2 # the decay parameter for TWP-CCP with decay
+    linearization_cache = {} if parameterize else None
+    penalty_coefficients = [cvx.Parameter(nonneg=True) for _ in var_penalty]
+    prob_new = None
 
     while it <= max_iter and all(var.value is not None for var in self.variables()):
 
-        constr_new = []
-        # objective
-        convexified_obj = convexify_obj(self.objective)
-        if not self.objective.is_dcp():
-            # non-sub/super-diff
-            while convexified_obj is None:
-                # damping
-                var_index = 0
-                for var in self.variables():
-                    var.value = 0.8 * var.value + 0.2 * variable_pres_value[var_index]
-                    var_index += 1
-                convexified_obj = convexify_obj(self.objective)
-            # domain constraints
-            for dom in self.objective.expr.domain:
-                print(dom,"dom")
-                constr_new.append(dom)
-        # new cost function
-        cost_new = convexified_obj.expr
+        # Combine tau and tree/decay weights numerically to keep the objective
+        # affine in its parameters, as required for DPP compilation caching.
+        for i, coefficient in enumerate(penalty_coefficients):
+            penalty_weight = var_weight[i]
+            if weight_type == "decay":
+                penalty_weight = (penalty_weight-penaltymin) * np.exp(-rate*(it-1)) + penaltymin
+            coefficient.value = penalty_weight * self.tau
 
-        # constraints
-        count_slack = 0
-        for i,arg in enumerate(self.constraints):
-            temp = convexify_constr(arg) 
-            if (not arg.is_dcp()): 
-                while temp is None:
+        if prob_new is None or not parameterize:
+            constr_new = []
+            # objective
+            convexified_obj = convexify_obj(self.objective, cache=linearization_cache)
+            if not self.objective.is_dcp():
+                # non-sub/super-diff
+                while convexified_obj is None:
                     # damping
                     var_index = 0
                     for var in self.variables():
-                        var.value = (
-                            0.8 * var.value + 0.2 * variable_pres_value[var_index]
-                        )
+                        var.value = 0.8 * var.value + 0.2 * variable_pres_value[var_index]
                         var_index += 1
-                    temp = convexify_constr(arg)
-
-                newcon = temp[0]  
-                for dom in temp[1]:  
+                    convexified_obj = convexify_obj(self.objective, cache=linearization_cache)
+                # domain constraints
+                for dom in self.objective.expr.domain:
+                    print(dom,"dom")
                     constr_new.append(dom)
-                constr_new.append(newcon.expr <= var_penalty[count_slack])
-                constr_new.append(var_penalty[count_slack] >= 0)
-                count_slack = count_slack + 1
-                
-            else:
-                constr_new.append(arg)
+            cost_new = convexified_obj.expr
 
-        # objective
-        if self.objective.NAME == "minimize":
-            for i,var in enumerate(var_penalty):
-                if weight_type == "decay":
-                    cost_new += ((var_weight[i]-penaltymin) * np.exp(-rate*(it-1)) + penaltymin) * self.tau * cvx.sum(var)
+            # constraints
+            count_slack = 0
+            for arg in self.constraints:
+                temp = convexify_constr(arg, cache=linearization_cache)
+                if not arg.is_dcp():
+                    while temp is None:
+                        # damping
+                        var_index = 0
+                        for var in self.variables():
+                            var.value = (
+                                0.8 * var.value + 0.2 * variable_pres_value[var_index]
+                            )
+                            var_index += 1
+                        temp = convexify_constr(arg, cache=linearization_cache)
+                    newcon = temp[0]
+                    constr_new.extend(temp[1])
+                    constr_new.append(newcon.expr <= var_penalty[count_slack])
+                    constr_new.append(var_penalty[count_slack] >= 0)
+                    count_slack += 1
                 else:
-                    cost_new += var_weight[i]  * self.tau * cvx.sum(var)
-            obj_new = cvx.Minimize(cost_new)
+                    constr_new.append(arg)
+
+            # objective
+            for i,var in enumerate(var_penalty):
+                coefficient = penalty_coefficients[i] if parameterize else penalty_coefficients[i].value
+                if self.objective.NAME == "minimize":
+                    cost_new += coefficient * cvx.sum(var)
+                else:
+                    cost_new -= coefficient * cvx.sum(var)
+            obj_new = cvx.Minimize(cost_new) if self.objective.NAME == "minimize" else cvx.Maximize(cost_new)
+            prob_new = cvx.Problem(obj_new, constr_new)
+            if parameterize and not prob_new.is_dcp(dpp=True):
+                raise ValueError(
+                    "The parameterized CCP subproblem is not DPP. "
+                    "Use parameterize=False to rebuild it each iteration."
+                )
         else:
-            for i,var in enumerate(var_penalty):
-                if weight_type == "decay":
-                    cost_new -= ((var_weight[i]-penaltymin) * np.exp(-rate*(it-1)) + penaltymin) * self.tau * cvx.sum(var)
-                else:
-                    cost_new -= var_weight[i]  * self.tau * cvx.sum(var)
-            obj_new = cvx.Maximize(cost_new)
-
-        # new problem
-        #print(len(constr_new),"length of constr new")
-        prob_new = cvx.Problem(obj_new, constr_new)
+            # The objective, constraints, variables and Problem stay intact;
+            # only tangent gradients, intercepts and penalty values change.
+            for tangent in linearization_cache.values():
+                while tangent.update() is None:
+                    for var, previous_value in zip(self.variables(), variable_pres_value):
+                        var.value = 0.8 * var.value + 0.2 * previous_value
 
         # keep previous value of variables
         variable_pres_value = []

@@ -69,5 +69,31 @@ The latter group of parameters in our method includes the weight parameter, whic
 ### Implementation on CCP part
 CVXPY was used as the interface to the solvers, but the CVXPY reduction chain that is performed at each step to normalize the optimization program adds additional computation time which can possibly be removed. For more information, see the cvxpy [tutorial](https://www.cvxpy.org/tutorial/advanced/index.html) and the cvxpy implementation of the convex-concave procedure [DCCP](http://github.com/cvxgrp/dccp/).
 
+The CCP loop now reuses one parameterized CVXPY subproblem by default. Tangent
+gradients, tangent offsets, and the combined tree/decay penalty coefficients are
+updated numerically at each iteration. The subproblem is checked for
+[DPP compliance](https://www.cvxpy.org/tutorial/dpp/index.html), so CVXPY can reuse
+its compilation after the first solve. Initialization still uses its separate
+ECOS problem, and parameter updates and solver work still take time.
+
+Existing examples enable this automatically. To compare with rebuilding the
+subproblem at every iteration, use
+`solver.Solve(initial_guess=initial_guess, weight="tree", parameterize=False)`.
+The same `parameterize` option is accepted by `prob.solve(method="dccp", ...)`.
+The solver backend and CCP stopping conditions are unchanged.
+
+Run a repeatable comparison from the repository root:
+```
+python -m examples.benchmark_parameterization --solver GUROBI --repeats 3
+```
+Use `--solver ECOS` to run without a Gurobi license. The comparison uses the same
+random seed and reports total CCP time, compilation time, model count, objective,
+original STL robustness, and maximum slack. The first parameterized compilation
+can be slower; the benefit comes from subsequent iterations.
+
+Regression checks for tangent equivalence, compilation reuse, penalty modes,
+and ReachAvoid are available with `python -m pytest tests/test_parameterization.py`
+(requires pytest).
+
 ### Benchmarks
-The benchmarks we used are from a python library for STL called [stlpy](https://github.com/vincekurtz/stlpy). Please see their [documentation](https://stlpy.readthedocs.io/en/latest/getting_started.html#a-simple-example) about the benchmark. 
+The benchmarks we used are from a python library for STL called [stlpy](https://github.com/vincekurtz/stlpy). Please see their [documentation](https://stlpy.readthedocs.io/en/latest/getting_started.html#a-simple-example) about the benchmark.

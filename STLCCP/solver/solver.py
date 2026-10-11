@@ -77,7 +77,7 @@ class CCPSTLSolver(STLSolver):
         self.constr_penalty += [1]
 
 
-    def Solve(self,initial_guess,weight):
+    def Solve(self,initial_guess,weight,parameterize=True):
 
         prob = cvxpy.Problem(cvxpy.Minimize(self.cost), self.constr)
 
@@ -88,7 +88,7 @@ class CCPSTLSolver(STLSolver):
         # GUROBI QP solver options:
         #   solopts={'Method':2,'BarConvTol':1e-3,'BarQCPConvTol':1e-3} # barrier
         #   solopts={'Method':1} # 1=dual simplex
-        result,solve_time = prob.solve(method="dccp", solver='GUROBI',verbose=False, constr_penalty=self.constr_penalty,weight=weight) # ,verbose=True, **solopts)
+        result,solve_time = prob.solve(method="dccp", solver='GUROBI',verbose=False, constr_penalty=self.constr_penalty,weight=weight,parameterize=parameterize) # ,verbose=True, **solopts)
 
         # Output
         print("cost:", "{:.4f}".format(result[0]),"rho_max:", "{:.4f}".format(self.rho_max.value[0]),"quadratic cost:", "{:.4f}".format(result[0]-self.rho_max.value[0]))
